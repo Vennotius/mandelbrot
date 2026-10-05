@@ -2,6 +2,7 @@
  * @author Bert Baron
  */
 import {WorkerContext, smoothen} from "./workerContext.mjs";
+import {BlaTable} from "./bla.mjs";
 
 export class MandelbrotPerturbation {
     /**
@@ -12,6 +13,7 @@ export class MandelbrotPerturbation {
         this.paramHash = null
         this.jobId = null
         this.referencePoints = []
+        this.useBla = true
     }
 
     async process(task){
@@ -91,8 +93,15 @@ export class MandelbrotPerturbation {
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
                         const zs = referencePoint[3]
+                        const dcr = dr - refDr
+                        const dci = di - refDi
+                        let bla = null
+                        if (this.useBla) {
+                            bla = referencePoint[4] ??= this.createBlaTable(refDr, refDi, zs, cWidth, cHeight)
+                            if (dcr * dcr + dci * dci > bla.deltaMax * bla.deltaMax) bla = null
+                        }
 
-                        const [iter, zq] = this.mandlebrot_perturbation(dr - refDr, di - refDi, this.max_iter, bailout, zs)
+                        const [iter, zq] = this.mandlebrot_perturbation(dcr, dci, this.max_iter, bailout, zs, bla)
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, zq)
                             found = true
@@ -160,14 +169,33 @@ export class MandelbrotPerturbation {
     }
 
     /**
+     * @param {number} refDr
+     * @param {number} refDi
+     * @param {[number, number, number][]} zs
+     * @param {number} cWidth
+     * @param {number} cHeight
+     * @returns {BlaTable}
+     */
+    createBlaTable(refDr, refDi, zs, cWidth, cHeight) {
+        // Largest |δ| of any pixel in the frame relative to this reference point
+        const deltaMax = Math.hypot(Math.max(refDr, cWidth - refDr), Math.max(refDi, cHeight - refDi))
+        // Never skip past the iteration where the reference escapes or past max_iter
+        const limit = Math.min(zs.length - 2, this.max_iter)
+        return new BlaTable(zs, limit, deltaMax)
+    }
+
+    /**
      * @param {number} dcr
      * @param {number} dci
      * @param {number} max_iter
      * @param {number} bailout
      * @param {[number, number, number][]} zs
+     * @param {BlaTable|null} bla
      * @returns {(number|number)[]|number[]}
      */
-    mandlebrot_perturbation(dcr, dci, max_iter, bailout, zs) {
+    mandlebrot_perturbation(dcr, dci, max_iter, bailout, zs, bla) {
+        const levels = bla === null ? null : bla.levels
+
         // ε₀ = δ
         let ezr = dcr
         let ezi = dci
@@ -180,6 +208,33 @@ export class MandelbrotPerturbation {
             }
             if (iter >= zs.length) {
                 return [-1, zzq]
+            }
+
+            // Skip runs of iterations that can be approximated linearly: εₙ₊ₗ = A·εₙ + B·δ. A run of 2^j steps can only
+            // start at a multiple of 2^j, and is never valid when the run of 2^(j-1) steps at the same start isn't. So we
+            // check the shortest run first (a single check when it fails) and climb to longer runs from there.
+            if (levels !== null && (iter & 1) === 0) {
+                const level1 = levels[0]
+                let eq = ezr * ezr + ezi * ezi
+                while ((iter >> 1) < level1.r2.length && eq < level1.r2[iter >> 1]) {
+                    const maxLevel = iter === 0 ? levels.length : Math.min(31 - Math.clz32(iter & -iter), levels.length)
+                    let j = 1
+                    while (j < maxLevel) {
+                        const i = iter >> (j + 1)
+                        const r2 = levels[j].r2
+                        if (i < r2.length && eq < r2[i]) j++
+                        else break
+                    }
+                    const level = levels[j - 1]
+                    const i = iter >> j
+                    const ar = level.ar[i], ai = level.ai[i], br = level.br[i], bi = level.bi[i]
+                    const _ezr = ar * ezr - ai * ezi + br * dcr - bi * dci
+                    ezi = ar * ezi + ai * ezr + br * dci + bi * dcr
+                    ezr = _ezr
+                    eq = ezr * ezr + ezi * ezi
+                    // stays even, so the next run may start right where this one ended
+                    iter += 1 << j
+                }
             }
 
             // Zₙ
