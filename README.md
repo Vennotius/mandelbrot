@@ -44,6 +44,10 @@ For each rendering pass, the image is broken into small parts which are then cac
 
 The reference points are calculated using fixed-point arithmetic, which is implemented using BigInt. The size of BigInt numbers is determined by the zoom level, so it increases while zooming in.
 
+**Bilinear approximation (BLA)**
+
+In the float64 perturbation range (≈1E13 to ≈1E300) iterations are skipped using [bilinear approximation](https://mathr.co.uk/web/deep-zoom.html#bilinear-approximation). As long as the perturbation ε is tiny compared to the reference orbit, many iterations in a row are linear in ε and δ and can be combined into a single step. These combined steps are stored per reference point in a binary tree, so a pixel can jump ahead hundreds or thousands of iterations at once. The deeper the zoom, the more iterations can be skipped. Run `node test/blaBenchmark.mjs` to compare speed and output with and without BLA.
+
 **Extended Float**
 The use of extended float was an idea of myself, though I'm likely not the first with the idea. In short and simplified, the Perturbation is based on adding a very small number δ to a much bigger number ε. At deep zoomlevels, δ becomes so small that it can not be represented anymore with a float64 (the exponent will become smaller than -1023). The precision is still more than enough though. By using an additional exponent, calculations can be done much further. The exponent doesn't need to be stored with each number. All the 'small' numbers in the loop implicitly share the same extra exponent, which is adjusted along the way. 
 
