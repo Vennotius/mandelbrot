@@ -8,8 +8,6 @@ A live version can be found here: https://vennotius.github.io/mandelbrot/
 
 This is a fork of [bertbaron/mandelbrot](https://github.com/bertbaron/mandelbrot) (live at https://bertbaron.github.io/mandelbrot/).
 
-You can share your favorite views by copying the URL and add it in a comment to [this issue](https://github.com/bertbaron/mandelbrot/issues/4)
-
 ## Table of Contents
 
 - [Background](#background)
