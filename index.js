@@ -1022,6 +1022,9 @@ function initListeners() {
     document.getElementById("lucky-button").addEventListener('click', (event) => {
         iFeelLucky().catch(e => console.error('could not load favorites', e));
     })
+    document.getElementById("copy-favorite-button").addEventListener('click', (event) => {
+        copyFavorite(event.currentTarget)
+    })
     appElement.addEventListener('keydown', (event) => {
         activeComponent.onKeydown(event)
     })
@@ -1058,9 +1061,7 @@ async function iFeelLucky() {
     redraw()
 }
 
-function updatePermalink() {
-    const url = new URL(window.location)
-    const p = url.searchParams
+function currentParams() {
     const params = {
         center: fractal.center,
         zoom: fractal.zoom,
@@ -1068,9 +1069,30 @@ function updatePermalink() {
         smooth: fractal.smooth,
         palette: palette.toPermalinkPalette(paletteSelector.palette, paletteSelector.density, paletteSelector.rotate)
     }
-    p.set('params', btoa(JSON.stringify(params)))
+    return btoa(JSON.stringify(params))
+}
 
+function updatePermalink() {
+    const url = new URL(window.location)
+    url.searchParams.set('params', currentParams())
     window.history.replaceState({}, '', url)
+}
+
+// Copies the current view as a ready-to-paste line for the FAVORITES list in favorites.js
+async function copyFavorite(button) {
+    const label = button.innerText
+    button.disabled = true
+    try {
+        await navigator.clipboard.writeText(`"${currentParams()}",`)
+        button.innerText = 'Copied'
+    } catch (e) {
+        console.error('could not copy favorite', e)
+        button.innerText = 'Copy failed'
+    }
+    setTimeout(() => {
+        button.innerText = label
+        button.disabled = false
+    }, 1500)
 }
 
 function initUI() {
