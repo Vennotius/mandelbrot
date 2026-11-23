@@ -4,6 +4,14 @@
 import {WorkerContext, smoothen} from "./workerContext.mjs";
 import {BlaTable} from "./bla.mjs";
 
+// BLA only pays off at deep zooms. At shallower zooms its skips are short (2-8 iterations) and rendering measured about
+// 2x slower than without BLA. The extra time is spent in V8 once the skip path has run, not in building the tables or
+// in the checks; the exact cause was not found. If it is ever fixed, this threshold can be lowered.
+// Measured crossover on the favourites lies between 1E33 (BLA slower) and 6E39 (BLA faster).
+// For the same reason the BLA loop has its own function: when both shared one, a worker that had rendered a deep zoom
+// stayed slow for every later render without BLA.
+const BLA_MIN_ZOOM = 1e35
+
 export class MandelbrotPerturbation {
     /**
      * @param {WorkerContext} ctx
@@ -62,6 +70,9 @@ export class MandelbrotPerturbation {
 
         this.updateCache(task, cWidth, cHeight, scaleFactor)
 
+        // zoom = 4 / frame width in the complex plane
+        const useBla = this.useBla && cWidth <= 4 / BLA_MIN_ZOOM
+
         if (this.referencePoints.length === 0) {
             const x = Math.trunc(w / 2)
             const y = Math.trunc(h / 2)
@@ -96,12 +107,14 @@ export class MandelbrotPerturbation {
                         const dcr = dr - refDr
                         const dci = di - refDi
                         let bla = null
-                        if (this.useBla) {
+                        if (useBla) {
                             bla = referencePoint[4] ??= this.createBlaTable(refDr, refDi, zs, cWidth, cHeight)
                             if (dcr * dcr + dci * dci > bla.deltaMax * bla.deltaMax) bla = null
                         }
 
-                        const [iter, zq] = this.mandlebrot_perturbation(dcr, dci, this.max_iter, bailout, zs, bla)
+                        const [iter, zq] = bla === null
+                            ? this.mandlebrot_perturbation(dcr, dci, this.max_iter, bailout, zs)
+                            : this.mandlebrot_perturbation_bla(dcr, dci, this.max_iter, bailout, zs, bla)
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, zq)
                             found = true
@@ -190,11 +203,59 @@ export class MandelbrotPerturbation {
      * @param {number} max_iter
      * @param {number} bailout
      * @param {[number, number, number][]} zs
-     * @param {BlaTable|null} bla
      * @returns {(number|number)[]|number[]}
      */
-    mandlebrot_perturbation(dcr, dci, max_iter, bailout, zs, bla) {
-        const levels = bla === null ? null : bla.levels
+    mandlebrot_perturbation(dcr, dci, max_iter, bailout, zs) {
+        // ε₀ = δ
+        let ezr = dcr
+        let ezi = dci
+
+        let iter = -1
+        let zzq = 0
+        while (zzq <= bailout) {
+            if (iter++ === max_iter) {
+                return [2, 0]
+            }
+            if (iter >= zs.length) {
+                return [-1, zzq]
+            }
+
+            // Zₙ
+            const _zsvalues = zs[iter]
+            const zr = _zsvalues[0]
+            const zi = _zsvalues[1]
+            const zqErrorBound = _zsvalues[2]
+
+            // Z'ₙ = Zₙ + εₙ
+            const zzr = zr + ezr
+            const zzi = zi + ezi
+            zzq = zzr * zzr + zzi * zzi
+            if (zzq < zqErrorBound) {
+                return [-1, 0]
+            }
+
+            // εₙ₊₁ = 2·zₙ·εₙ + εₙ² + δ = (2·zₙ + εₙ)·εₙ + δ
+            const zr_ezr_2 = zr + zzr
+            const zi_ezi_2 = zi + zzi
+            const _ezr = zr_ezr_2 * ezr - zi_ezi_2 * ezi
+            const _ezi = zr_ezr_2 * ezi + zi_ezi_2 * ezr
+            ezr = _ezr + dcr
+            ezi = _ezi + dci
+        }
+        return [iter + 4, zzq]
+    }
+
+    /**
+     * @param {number} dcr
+     * @param {number} dci
+     * @param {number} max_iter
+     * @param {number} bailout
+     * @param {[number, number, number][]} zs
+     * @param {BlaTable} bla
+     * @returns {(number|number)[]|number[]}
+     */
+    mandlebrot_perturbation_bla(dcr, dci, max_iter, bailout, zs, bla) {
+        const levels = bla.levels
 
         // ε₀ = δ
         let ezr = dcr
@@ -213,7 +274,7 @@ export class MandelbrotPerturbation {
             // Skip runs of iterations that can be approximated linearly: εₙ₊ₗ = A·εₙ + B·δ. A run of 2^j steps can only
             // start at a multiple of 2^j, and is never valid when the run of 2^(j-1) steps at the same start isn't. So we
             // check the shortest run first (a single check when it fails) and climb to longer runs from there.
-            if (levels !== null && (iter & 1) === 0) {
+            if ((iter & 1) === 0) {
                 const level1 = levels[0]
                 let eq = ezr * ezr + ezi * ezi
                 while ((iter >> 1) < level1.r2.length && eq < level1.r2[iter >> 1]) {
